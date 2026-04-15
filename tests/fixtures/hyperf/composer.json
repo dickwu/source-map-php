@@ -1,0 +1,7 @@
+{
+  "name": "acme/hyperf-consent",
+  "require": {
+    "php": "^8.3",
+    "hyperf/hyperf": "^3.1"
+  }
+}

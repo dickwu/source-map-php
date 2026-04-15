@@ -1,0 +1,10 @@
+{
+  "packages": [
+    {
+      "name": "laravel/framework",
+      "version": "11.0.0",
+      "type": "library",
+      "description": "Laravel framework"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "packages": [
+    {
+      "name": "hyperf/hyperf",
+      "version": "3.1.0",
+      "type": "library",
+      "description": "Hyperf framework"
+    }
+  ]
+}
