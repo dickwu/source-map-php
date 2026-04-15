@@ -65,7 +65,20 @@ The current CI builds and tests on Linux and macOS.
 
 ## Install
 
-Until GitHub release artifacts are published, build from source:
+Install from crates.io:
+
+```bash
+cargo install source-map-php
+```
+
+Install from Homebrew:
+
+```bash
+brew tap dickwu/tap
+brew install source-map-php
+```
+
+Or build from source:
 
 ```bash
 git clone git@github.com:dickwu/source-map-php.git

@@ -1,8 +1,16 @@
 [package]
 name = "source-map-php"
-version = "0.1.0"
+version = "0.1.3"
 edition = "2024"
 default-run = "source-map-php"
+description = "CLI-first PHP code search indexer for Laravel and Hyperf repositories"
+license = "MIT"
+repository = "https://github.com/dickwu/source-map-php"
+homepage = "https://github.com/dickwu/source-map-php"
+documentation = "https://docs.rs/source-map-php"
+readme = "README.md"
+keywords = ["php", "search", "meilisearch", "laravel", "hyperf"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1.0.100"
