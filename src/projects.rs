@@ -29,7 +29,7 @@ impl ProjectRegistry {
             return Ok(Self::default());
         }
         let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-        Ok(serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?)
+        serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {

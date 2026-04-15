@@ -84,10 +84,10 @@ fn parse_route_file(
             });
         }
 
-        if trimmed.ends_with('{') {
-            if let Some(group) = pending_group.take() {
-                groups.push(group);
-            }
+        if trimmed.ends_with('{')
+            && let Some(group) = pending_group.take()
+        {
+            groups.push(group);
         }
 
         if let Some(caps) = add_route_re.captures(trimmed) {
@@ -140,19 +140,19 @@ fn parse_route_file(
             ));
         }
 
-        if trimmed.starts_with("},") || trimmed.starts_with("});") || trimmed == "});" {
-            if let Some(mut group) = groups.pop() {
-                if group.middleware.is_empty() {
-                    if let Some(caps) = middleware_re.captures(trimmed) {
-                        group.middleware = parse_middleware_list(caps.get(1).unwrap().as_str());
-                    }
-                }
-                if !group.middleware.is_empty() {
-                    for route in docs.iter_mut().skip(group.doc_start_index) {
-                        for middleware in &group.middleware {
-                            if !route.middleware.iter().any(|item| item == middleware) {
-                                route.middleware.push(middleware.clone());
-                            }
+        if (trimmed.starts_with("},") || trimmed.starts_with("});") || trimmed == "});")
+            && let Some(mut group) = groups.pop()
+        {
+            if group.middleware.is_empty()
+                && let Some(caps) = middleware_re.captures(trimmed)
+            {
+                group.middleware = parse_middleware_list(caps.get(1).unwrap().as_str());
+            }
+            if !group.middleware.is_empty() {
+                for route in docs.iter_mut().skip(group.doc_start_index) {
+                    for middleware in &group.middleware {
+                        if !route.middleware.iter().any(|item| item == middleware) {
+                            route.middleware.push(middleware.clone());
                         }
                     }
                 }

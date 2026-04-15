@@ -549,11 +549,11 @@ pub mod commands {
             .as_ref()
             .map(|item| item.index_prefix.clone())
             .unwrap_or_else(|| config.effective_index_prefix(&current_dir));
-        if let Some(project) = selected_project.as_ref() {
-            if env::var("MEILI_HOST").is_err() && config.meilisearch.host == "http://127.0.0.1:7700"
-            {
-                config.meilisearch.host = project.meili_host.clone();
-            }
+        if let Some(project) = selected_project.as_ref()
+            && env::var("MEILI_HOST").is_err()
+            && config.meilisearch.host == "http://127.0.0.1:7700"
+        {
+            config.meilisearch.host = project.meili_host.clone();
         }
         let meili = MeiliClient::new(config.resolve_meili()?)?;
         let compact = compact_query(query);

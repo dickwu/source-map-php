@@ -58,13 +58,12 @@ fn main() -> anyhow::Result<()> {
                 if let Some(text_document) = message
                     .get("params")
                     .and_then(|params| params.get("textDocument"))
-                {
-                    if let (Some(uri), Some(text)) = (
+                    && let (Some(uri), Some(text)) = (
                         text_document.get("uri").and_then(Value::as_str),
                         text_document.get("text").and_then(Value::as_str),
-                    ) {
-                        state.docs.insert(uri.to_string(), text.to_string());
-                    }
+                    )
+                {
+                    state.docs.insert(uri.to_string(), text.to_string());
                 }
             }
             Some("textDocument/documentSymbol") => {
