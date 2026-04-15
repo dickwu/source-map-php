@@ -127,26 +127,26 @@ source-map-php doctor --repo /path/to/php-repo
 ### 3. Build an index
 
 ```bash
-source-map-php index --repo /path/to/php-repo --project-name staff-api --framework auto --mode clean
+ source-map-php index --repo /path/to/php-repo --project-name ****-api --framework auto --mode clean
 ```
 
 ### 4. Search the index
 
 ```bash
-source-map-php search --project staff-api --query "patient consent store"
+ source-map-php search --project ****-api --query "patient consent store"
 ```
 
 If you omit `--index`, the CLI now searches across all saved index types and prints grouped results.
 
 You can point `--project` at either:
 
-- the saved project name, for example `staff-api`
-- the full repository path, for example `/Users/you/work/staff-api`
+- the saved project name, for example `****-api`
+- the full repository path, for example `/Users/you/work/****-api`
 
 ### 5. Remove a saved project
 
 ```bash
-source-map-php remove --project staff-api
+ source-map-php remove --project ****-api
 ```
 
 That removes the project entry from `~/.config/meilisearch/project.json` and deletes the matching Meilisearch indexes for that project prefix.
@@ -154,7 +154,7 @@ That removes the project entry from `~/.config/meilisearch/project.json` and del
 If you only want to forget the saved project name and keep the indexes:
 
 ```bash
-source-map-php remove --project staff-api --keep-indexes
+ source-map-php remove --project ****-api --keep-indexes
 ```
 
 ### 6. Ask for validation commands
