@@ -1,5 +1,6 @@
+use std::env;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use anyhow::{Context, Result, anyhow};
@@ -8,6 +9,9 @@ use url::Url;
 
 use super::DeclarationCandidate;
 
+const MAX_REFERENCE_LOOKUPS_TOTAL: usize = 64;
+const MAX_REFERENCE_LOOKUPS_PER_FILE: usize = 4;
+
 pub struct PhpactorExtractor {
     child: Child,
     stdin: ChildStdin,
@@ -15,20 +19,14 @@ pub struct PhpactorExtractor {
     next_id: u64,
     initialized: bool,
     root_uri: Url,
+    remaining_reference_lookups: usize,
 }
 
 impl PhpactorExtractor {
     pub fn connect(repo: &Path) -> Result<Self> {
-        let mut child = Command::new("phpactor")
-            .arg("language-server")
-            .current_dir(repo)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .context("spawn phpactor language-server")?;
-        let stdin = child.stdin.take().context("capture phpactor stdin")?;
-        let stdout = child.stdout.take().context("capture phpactor stdout")?;
+        let mut child = spawn_lsp_process(repo)?;
+        let stdin = child.stdin.take().context("capture lsp stdin")?;
+        let stdout = child.stdout.take().context("capture lsp stdout")?;
         Ok(Self {
             child,
             stdin,
@@ -36,6 +34,7 @@ impl PhpactorExtractor {
             next_id: 1,
             initialized: false,
             root_uri: Url::from_directory_path(repo).map_err(|_| anyhow!("invalid repo path"))?,
+            remaining_reference_lookups: MAX_REFERENCE_LOOKUPS_TOTAL,
         })
     }
 
@@ -61,7 +60,39 @@ impl PhpactorExtractor {
             "textDocument/documentSymbol",
             json!({ "textDocument": { "uri": uri } }),
         )?;
-        parse_document_symbols(&result)
+        let mut declarations = parse_document_symbols(&result);
+
+        for declaration in declarations
+            .iter_mut()
+            .filter(|item| is_important_symbol(item))
+            .take(MAX_REFERENCE_LOOKUPS_PER_FILE)
+        {
+            if self.remaining_reference_lookups == 0 {
+                break;
+            }
+            self.remaining_reference_lookups -= 1;
+            let position = json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": declaration.line_start.saturating_sub(1), "character": 0 }
+            });
+            let _ = self.request("textDocument/definition", position.clone());
+            if let Ok(references) = self.request(
+                "textDocument/references",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": declaration.line_start.saturating_sub(1), "character": 0 },
+                    "context": { "includeDeclaration": true }
+                }),
+            ) {
+                declaration.references_count = references
+                    .as_array()
+                    .map(|items| items.len() as u32)
+                    .unwrap_or(0);
+                declaration.extraction_confidence = "phpantom_lsp".to_string();
+            }
+        }
+
+        Ok(declarations)
     }
 
     fn ensure_initialized(&mut self) -> Result<()> {
@@ -95,7 +126,7 @@ impl PhpactorExtractor {
             let message = self.read_message()?;
             if message.get("id").and_then(Value::as_u64) == Some(id) {
                 if let Some(error) = message.get("error") {
-                    return Err(anyhow!("phpactor {method} failed: {error}"));
+                    return Err(anyhow!("lsp {method} failed: {error}"));
                 }
                 return Ok(message.get("result").cloned().unwrap_or(Value::Null));
             }
@@ -124,7 +155,7 @@ impl PhpactorExtractor {
             let mut line = String::new();
             let bytes = self.stdout.read_line(&mut line)?;
             if bytes == 0 {
-                return Err(anyhow!("phpactor closed stdout"));
+                return Err(anyhow!("lsp closed stdout"));
             }
             let trimmed = line.trim();
             if trimmed.is_empty() {
@@ -134,8 +165,7 @@ impl PhpactorExtractor {
                 content_length = Some(value.trim().parse()?);
             }
         }
-        let length =
-            content_length.ok_or_else(|| anyhow!("missing content length from phpactor"))?;
+        let length = content_length.ok_or_else(|| anyhow!("missing content length from lsp"))?;
         let mut buf = vec![0u8; length];
         self.stdout.read_exact(&mut buf)?;
         Ok(serde_json::from_slice(&buf)?)
@@ -152,7 +182,52 @@ impl Drop for PhpactorExtractor {
     }
 }
 
-fn parse_document_symbols(value: &Value) -> Result<Vec<DeclarationCandidate>> {
+fn spawn_lsp_process(repo: &Path) -> Result<Child> {
+    let candidates = [
+        embedded_phpantom_path(),
+        Some(PathBuf::from("phpantom_lsp")),
+        Some(PathBuf::from("phpactor")),
+    ];
+
+    for candidate in candidates.into_iter().flatten() {
+        let mut command = Command::new(&candidate);
+        if candidate.file_name().and_then(|name| name.to_str()) == Some("phpactor") {
+            command.arg("language-server");
+        }
+        let child = command
+            .current_dir(repo)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn();
+        if let Ok(child) = child {
+            return Ok(child);
+        }
+    }
+
+    Err(anyhow!(
+        "failed to spawn phpantom_lsp or phpactor language server"
+    ))
+}
+
+fn embedded_phpantom_path() -> Option<PathBuf> {
+    let current = env::current_exe().ok()?;
+    let sibling = current.parent()?.join("phpantom_lsp");
+    if sibling.exists() {
+        Some(sibling)
+    } else {
+        None
+    }
+}
+
+fn is_important_symbol(item: &DeclarationCandidate) -> bool {
+    matches!(
+        item.kind.as_str(),
+        "class" | "interface" | "trait" | "enum" | "function"
+    )
+}
+
+fn parse_document_symbols(value: &Value) -> Vec<DeclarationCandidate> {
     fn walk(
         node: &Value,
         namespace: Option<String>,
@@ -207,7 +282,8 @@ fn parse_document_symbols(value: &Value) -> Result<Vec<DeclarationCandidate>> {
                     .get("detail")
                     .and_then(Value::as_str)
                     .map(ToOwned::to_owned),
-                extraction_confidence: "phpactor".to_string(),
+                extraction_confidence: "phpantom_lsp".to_string(),
+                references_count: 0,
             });
 
             if let Some(children) = node.get("children").and_then(Value::as_array) {
@@ -224,5 +300,5 @@ fn parse_document_symbols(value: &Value) -> Result<Vec<DeclarationCandidate>> {
             walk(node, None, None, &mut out);
         }
     }
-    Ok(out)
+    out
 }

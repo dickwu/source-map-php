@@ -4,6 +4,7 @@ pub mod config;
 pub mod extract;
 pub mod meili;
 pub mod models;
+pub mod projects;
 pub mod query;
 pub mod sanitizer;
 pub mod scanner;
@@ -16,7 +17,7 @@ use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::config::IndexerConfig;
+use crate::config::{IndexerConfig, default_connect_file_path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -54,6 +55,7 @@ impl IndexMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SearchIndex {
+    All,
     Symbols,
     Routes,
     Tests,
@@ -64,6 +66,7 @@ pub enum SearchIndex {
 impl SearchIndex {
     pub fn suffix(self) -> &'static str {
         match self {
+            Self::All => "all",
             Self::Symbols => "symbols",
             Self::Routes => "routes",
             Self::Tests => "tests",
@@ -101,6 +104,8 @@ enum Commands {
     Index {
         #[arg(long)]
         repo: PathBuf,
+        #[arg(long)]
+        project_name: Option<String>,
         #[arg(long, value_enum, default_value_t = Framework::Auto)]
         framework: Framework,
         #[arg(long, value_enum, default_value_t = IndexMode::Clean)]
@@ -111,14 +116,24 @@ enum Commands {
     Search {
         #[arg(long)]
         query: String,
-        #[arg(long, value_enum, default_value_t = SearchIndex::Symbols)]
+        #[arg(long, value_enum, default_value_t = SearchIndex::All)]
         index: SearchIndex,
+        #[arg(long)]
+        project: Option<String>,
         #[arg(long)]
         framework: Option<Framework>,
         #[arg(long, default_value = "config/indexer.toml")]
         config: PathBuf,
         #[arg(long)]
         json: bool,
+    },
+    Remove {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        keep_indexes: bool,
+        #[arg(long, default_value = "config/indexer.toml")]
+        config: PathBuf,
     },
     Validate {
         #[arg(long)]
@@ -147,17 +162,24 @@ pub fn run() -> Result<()> {
         Commands::Doctor { repo, config } => commands::doctor(&repo, &config),
         Commands::Index {
             repo,
+            project_name,
             framework,
             mode,
             config,
-        } => commands::index(&repo, framework, mode, &config),
+        } => commands::index(&repo, project_name.as_deref(), framework, mode, &config),
         Commands::Search {
             query,
             index,
+            project,
             framework,
             config,
             json,
-        } => commands::search(&query, index, framework, &config, json),
+        } => commands::search(&query, project.as_deref(), index, framework, &config, json),
+        Commands::Remove {
+            project,
+            keep_indexes,
+            config,
+        } => commands::remove(&project, keep_indexes, &config),
         Commands::Validate {
             symbol,
             config,
@@ -169,6 +191,10 @@ pub fn run() -> Result<()> {
 }
 
 fn init_workspace(dir: &Path, force: bool) -> Result<()> {
+    init_workspace_with_connect_path(dir, &default_connect_file_path(), force)
+}
+
+fn init_workspace_with_connect_path(dir: &Path, connect_path: &Path, force: bool) -> Result<()> {
     let config_dir = dir.join("config");
     fs::create_dir_all(&config_dir).with_context(|| format!("create {}", config_dir.display()))?;
 
@@ -183,12 +209,25 @@ fn init_workspace(dir: &Path, force: bool) -> Result<()> {
         assets::docker_compose_example(),
         force,
     )?;
+    let global_template_created =
+        write_scaffold_if_missing(connect_path, assets::meili_connect_template())?;
 
     println!(
         "Initialized source-map-php config in {} at {}",
         dir.display(),
         Utc::now().to_rfc3339()
     );
+    if global_template_created {
+        println!(
+            "Created Meilisearch connect template at {}",
+            connect_path.display()
+        );
+    } else {
+        println!(
+            "Left existing Meilisearch connect file unchanged at {}",
+            connect_path.display()
+        );
+    }
     Ok(())
 }
 
@@ -207,6 +246,18 @@ fn write_scaffold(path: &Path, content: &str, force: bool) -> Result<()> {
     Ok(())
 }
 
+fn write_scaffold_if_missing(path: &Path, content: &str) -> Result<bool> {
+    if path.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create parent directory for {}", path.display()))?;
+    }
+    fs::write(path, content).with_context(|| format!("write {}", path.display()))?;
+    Ok(true)
+}
+
 mod assets {
     pub fn env_example() -> &'static str {
         "MEILI_HOST=http://127.0.0.1:7700\nMEILI_MASTER_KEY=change-me\n"
@@ -214,6 +265,10 @@ mod assets {
 
     pub fn docker_compose_example() -> &'static str {
         "services:\n  meilisearch:\n    image: getmeili/meilisearch:v1.12\n    ports:\n      - \"7700:7700\"\n    environment:\n      MEILI_ENV: production\n      MEILI_MASTER_KEY: \"${MEILI_MASTER_KEY}\"\n      MEILI_NO_ANALYTICS: \"true\"\n    volumes:\n      - meili_data:/meili_data\n    restart: unless-stopped\n\nvolumes:\n  meili_data:\n"
+    }
+
+    pub fn meili_connect_template() -> &'static str {
+        "{\n  \"url\": \"http://127.0.0.1:7700\",\n  \"apiKey\": \"change-me\"\n}\n"
     }
 }
 
@@ -241,11 +296,51 @@ pub mod commands {
         PackageDoc, RouteDoc, RunManifest, SchemaDoc, SymbolDoc, TestDoc, make_stable_id,
         manifest_path, run_id,
     };
+    use crate::projects::{ProjectRecord, ProjectRegistry, default_project_registry_path};
     use crate::query::compact_query;
     use crate::sanitizer::Sanitizer;
     use crate::scanner::scan_repo;
     use crate::tests_linker::{extract_tests, link_symbols_and_routes};
     use crate::{Framework, IndexMode, SearchIndex};
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct SymbolSearchDoc {
+        fqn: String,
+        path: String,
+        line_start: usize,
+        package_name: String,
+        #[serde(default)]
+        related_tests: Vec<String>,
+        #[serde(default)]
+        missing_test_warning: Option<String>,
+    }
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct RouteSearchDoc {
+        method: String,
+        uri: String,
+        action: Option<String>,
+    }
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct TestSearchDoc {
+        fqn: String,
+        command: String,
+    }
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct PackageSearchDoc {
+        name: String,
+        version: Option<String>,
+    }
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct SchemaSearchDoc {
+        operation: String,
+        table: Option<String>,
+        path: String,
+        line_start: usize,
+    }
 
     pub fn doctor(repo: &Path, config: &Path) -> Result<()> {
         let repo = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
@@ -253,12 +348,12 @@ pub mod commands {
         let config = IndexerConfig::load(config)?;
 
         let checks = vec![
-            ("php", command_exists("php")),
-            ("composer", command_exists("composer")),
-            ("phpactor", command_exists("phpactor")),
-            ("git", command_exists("git")),
+            ("php", command_exists("php"), true),
+            ("composer", command_exists("composer"), true),
+            ("phpactor", command_exists("phpactor"), false),
+            ("git", command_exists("git"), true),
         ];
-        for (name, ok) in &checks {
+        for (name, ok, _) in &checks {
             println!("{name:10} {}", if *ok { "ok" } else { "missing" });
         }
 
@@ -311,7 +406,7 @@ pub mod commands {
             println!("hyperf-cli {}", if ok { "ok" } else { "missing" });
         }
 
-        if checks.iter().any(|(_, ok)| !ok) {
+        if checks.iter().any(|(_, ok, required)| *required && !ok) {
             bail!("doctor found missing required dependencies");
         }
         Ok(())
@@ -319,6 +414,7 @@ pub mod commands {
 
     pub fn index(
         repo: &Path,
+        project_name: Option<&str>,
         requested_framework: Framework,
         mode: IndexMode,
         config_path: &Path,
@@ -372,7 +468,8 @@ pub mod commands {
             created_at: Utc::now(),
         };
 
-        let meili = MeiliClient::new(config.resolve_meili()?)?;
+        let connection = config.resolve_meili()?;
+        let meili = MeiliClient::new(connection.clone())?;
         for (suffix, index_name) in &indexes {
             meili.create_index(index_name)?;
             match suffix.as_str() {
@@ -409,6 +506,17 @@ pub mod commands {
             fs::create_dir_all(parent)?;
         }
         fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+        upsert_project_registry(ProjectRecord {
+            name: project_name
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| prefix.clone()),
+            repo_path: repo.display().to_string(),
+            index_prefix: prefix.clone(),
+            framework: framework.as_str().to_string(),
+            meili_host: connection.host.to_string(),
+            last_run_id: run_id.clone(),
+            updated_at: Utc::now(),
+        })?;
 
         println!(
             "Indexed {} files into {} ({})\n  symbols: {}\n  routes: {}\n  tests: {}\n  packages: {}\n  schema: {}\n  run: {}",
@@ -427,34 +535,154 @@ pub mod commands {
 
     pub fn search(
         query: &str,
+        project: Option<&str>,
         index: SearchIndex,
         framework: Option<Framework>,
         config_path: &Path,
         json_output: bool,
     ) -> Result<()> {
         load_env_for(config_path);
-        let config = IndexerConfig::load(config_path)?;
-        let prefix = config.effective_index_prefix(&env::current_dir()?);
+        let mut config = IndexerConfig::load(config_path)?;
+        let current_dir = env::current_dir()?;
+        let selected_project = resolve_project_selector(project)?;
+        let prefix = selected_project
+            .as_ref()
+            .map(|item| item.index_prefix.clone())
+            .unwrap_or_else(|| config.effective_index_prefix(&current_dir));
+        if let Some(project) = selected_project.as_ref() {
+            if env::var("MEILI_HOST").is_err() && config.meilisearch.host == "http://127.0.0.1:7700" {
+                config.meilisearch.host = project.meili_host.clone();
+            }
+        }
         let meili = MeiliClient::new(config.resolve_meili()?)?;
-        let index_name = format!("{prefix}_{}", index.suffix());
         let compact = compact_query(query);
         let filter =
             framework.map(|framework| json!([format!("framework = {}", framework.as_str())]));
 
         match index {
+            SearchIndex::All => {
+                let symbols = meili.search::<SymbolSearchDoc>(
+                    &format!("{prefix}_symbols"),
+                    {
+                        let mut body = json!({
+                            "q": compact,
+                            "limit": config.search.exact_limit,
+                            "showRankingScore": true,
+                            "attributesToSearchOn": ["short_name", "fqn", "owner_class", "symbol_tokens"],
+                            "attributesToRetrieve": ["fqn", "path", "line_start", "package_name", "related_tests", "missing_test_warning"],
+                            "matchingStrategy": "all",
+                            "filter": ["is_test = false"]
+                        });
+                        if let Some(filter) = &filter {
+                            body["filter"] = filter.clone();
+                        }
+                        body
+                    },
+                )?;
+                let routes = meili.search::<RouteSearchDoc>(
+                    &format!("{prefix}_routes"),
+                    json!({"q": compact, "limit": config.search.exact_limit, "showRankingScore": true}),
+                )?;
+                let tests = meili.search::<TestSearchDoc>(
+                    &format!("{prefix}_tests"),
+                    json!({"q": compact, "limit": config.search.natural_limit, "showRankingScore": true}),
+                )?;
+                let packages = meili.search::<PackageSearchDoc>(
+                    &format!("{prefix}_packages"),
+                    json!({"q": compact, "limit": config.search.natural_limit, "showRankingScore": true}),
+                )?;
+                let schema = meili.search::<SchemaSearchDoc>(
+                    &format!("{prefix}_schema"),
+                    json!({"q": compact, "limit": config.search.natural_limit, "showRankingScore": true}),
+                )?;
+
+                if json_output {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "project": selected_project.as_ref().map(|item| item.name.clone()).unwrap_or(prefix.clone()),
+                            "index_prefix": prefix,
+                            "symbols": symbols,
+                            "routes": routes,
+                            "tests": tests,
+                            "packages": packages,
+                            "schema": schema,
+                        }))?
+                    );
+                } else {
+                    if !symbols.hits.is_empty() {
+                        println!("Symbols:");
+                        for hit in &symbols.hits {
+                            println!(
+                                "{}\n  path: {}:{}\n  package: {}\n  score: {:?}\n  tests: {}\n",
+                                hit.document.fqn,
+                                hit.document.path,
+                                hit.document.line_start,
+                                hit.document.package_name,
+                                hit.ranking_score,
+                                hit.document.related_tests.join(", ")
+                            );
+                        }
+                    }
+                    if !routes.hits.is_empty() {
+                        println!("Routes:");
+                        for hit in &routes.hits {
+                            println!(
+                                "{} {} -> {}",
+                                hit.document.method,
+                                hit.document.uri,
+                                hit.document.action.clone().unwrap_or_else(|| "unknown".to_string())
+                            );
+                        }
+                    }
+                    if !tests.hits.is_empty() {
+                        println!("Tests:");
+                        for hit in &tests.hits {
+                            println!("{} -> {}", hit.document.fqn, hit.document.command);
+                        }
+                    }
+                    if !packages.hits.is_empty() {
+                        println!("Packages:");
+                        for hit in &packages.hits {
+                            println!("{} {:?}", hit.document.name, hit.document.version);
+                        }
+                    }
+                    if !schema.hits.is_empty() {
+                        println!("Schema:");
+                        for hit in &schema.hits {
+                            println!(
+                                "{} {:?} {}:{}",
+                                hit.document.operation,
+                                hit.document.table,
+                                hit.document.path,
+                                hit.document.line_start
+                            );
+                        }
+                    }
+                }
+            }
             SearchIndex::Symbols => {
+                let index_name = format!("{prefix}_{}", index.suffix());
                 let mut body = json!({
                     "q": compact,
                     "limit": config.search.exact_limit,
                     "showRankingScore": true,
                     "attributesToSearchOn": ["short_name", "fqn", "owner_class", "symbol_tokens"],
+                    "attributesToRetrieve": [
+                        "fqn",
+                        "path",
+                        "line_start",
+                        "package_name",
+                        "related_tests",
+                        "missing_test_warning"
+                    ],
                     "matchingStrategy": "all",
                     "filter": ["is_test = false"]
                 });
                 if let Some(filter) = filter {
                     body["filter"] = filter;
                 }
-                let response = meili.search::<SymbolDoc>(&index_name, body)?;
+                let response = meili.search::<SymbolSearchDoc>(&index_name, body)?;
                 if json_output {
                     println!("{}", serde_json::to_string_pretty(&response)?);
                 } else {
@@ -472,6 +700,7 @@ pub mod commands {
                 }
             }
             SearchIndex::Routes => {
+                let index_name = format!("{prefix}_{}", index.suffix());
                 let response = meili.search::<RouteDoc>(
                     &index_name,
                     json!({"q": compact, "limit": config.search.exact_limit, "showRankingScore": true}),
@@ -490,6 +719,7 @@ pub mod commands {
                 }
             }
             SearchIndex::Tests => {
+                let index_name = format!("{prefix}_{}", index.suffix());
                 let response = meili.search::<TestDoc>(
                     &index_name,
                     json!({"q": compact, "limit": config.search.natural_limit, "showRankingScore": true}),
@@ -503,6 +733,7 @@ pub mod commands {
                 }
             }
             SearchIndex::Packages => {
+                let index_name = format!("{prefix}_{}", index.suffix());
                 let response = meili.search::<PackageDoc>(
                     &index_name,
                     json!({"q": compact, "limit": config.search.natural_limit, "showRankingScore": true}),
@@ -516,6 +747,7 @@ pub mod commands {
                 }
             }
             SearchIndex::Schema => {
+                let index_name = format!("{prefix}_{}", index.suffix());
                 let response = meili.search::<SchemaDoc>(
                     &index_name,
                     json!({"q": compact, "limit": config.search.natural_limit, "showRankingScore": true}),
@@ -582,6 +814,36 @@ pub mod commands {
                 config.tests.validate_threshold
             );
         }
+        Ok(())
+    }
+
+    pub fn remove(project: &str, keep_indexes: bool, config_path: &Path) -> Result<()> {
+        load_env_for(config_path);
+        let path = default_project_registry_path();
+        let mut registry = ProjectRegistry::load(&path)?;
+        let record = registry
+            .remove(project)
+            .ok_or_else(|| anyhow!("project '{}' not found in {}", project, path.display()))?;
+
+        if !keep_indexes {
+            let mut config = IndexerConfig::load(config_path)?;
+            if env::var("MEILI_HOST").is_err() && config.meilisearch.host == "http://127.0.0.1:7700" {
+                config.meilisearch.host = record.meili_host.clone();
+            }
+            let meili = MeiliClient::new(config.resolve_meili()?)?;
+            for suffix in ["symbols", "routes", "tests", "packages", "schema", "runs"] {
+                meili.delete_index(&format!("{}_{}", record.index_prefix, suffix))?;
+            }
+        }
+
+        registry.save(&path)?;
+        println!(
+            "Removed project '{}' from {}\n  repo: {}\n  indexes_removed: {}",
+            record.name,
+            path.display(),
+            record.repo_path,
+            if keep_indexes { "no" } else { "yes" }
+        );
         Ok(())
     }
 
@@ -749,6 +1011,26 @@ pub mod commands {
             .map(|entry| entry.path())
             .ok_or_else(|| anyhow!("no run manifests found in {}", dir.display()))
     }
+
+    fn upsert_project_registry(record: ProjectRecord) -> Result<()> {
+        let path = default_project_registry_path();
+        let mut registry = ProjectRegistry::load(&path)?;
+        registry.upsert(record);
+        registry.save(&path)
+    }
+
+    fn resolve_project_selector(selector: Option<&str>) -> Result<Option<ProjectRecord>> {
+        let Some(selector) = selector else {
+            return Ok(None);
+        };
+        let path = default_project_registry_path();
+        let registry = ProjectRegistry::load(&path)?;
+        registry
+            .resolve(selector)
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| anyhow!("project '{}' not found in {}", selector, path.display()))
+    }
 }
 
 #[cfg(test)]
@@ -757,16 +1039,18 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::init_workspace;
+    use super::init_workspace_with_connect_path;
 
     #[test]
     fn init_scaffolds_default_files() {
         let temp = tempdir().unwrap();
-        init_workspace(temp.path(), false).unwrap();
+        let connect_path = temp.path().join(".config/meilisearch/connect.json");
+        init_workspace_with_connect_path(temp.path(), &connect_path, false).unwrap();
 
         assert!(temp.path().join("config/indexer.toml").exists());
         assert!(temp.path().join(".env.example").exists());
         assert!(temp.path().join("docker-compose.meilisearch.yml").exists());
+        assert!(connect_path.exists());
     }
 
     #[test]
@@ -774,8 +1058,28 @@ mod tests {
         let temp = tempdir().unwrap();
         fs::create_dir_all(temp.path().join("config")).unwrap();
         fs::write(temp.path().join("config/indexer.toml"), "existing").unwrap();
+        let connect_path = temp.path().join(".config/meilisearch/connect.json");
 
-        let err = init_workspace(temp.path(), false).unwrap_err();
+        let err = init_workspace_with_connect_path(temp.path(), &connect_path, false).unwrap_err();
         assert!(err.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn init_does_not_overwrite_existing_global_connect_file() {
+        let temp = tempdir().unwrap();
+        let connect_path = temp.path().join(".config/meilisearch/connect.json");
+        fs::create_dir_all(connect_path.parent().unwrap()).unwrap();
+        fs::write(
+            &connect_path,
+            "{\"url\":\"http://example.test:7700\",\"apiKey\":\"real\"}\n",
+        )
+        .unwrap();
+
+        init_workspace_with_connect_path(temp.path(), &connect_path, false).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&connect_path).unwrap(),
+            "{\"url\":\"http://example.test:7700\",\"apiKey\":\"real\"}\n"
+        );
     }
 }

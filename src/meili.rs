@@ -40,6 +40,21 @@ impl MeiliClient {
         ))
     }
 
+    pub fn delete_index(&self, name: &str) -> Result<()> {
+        let response = self
+            .client
+            .delete(self.url(&format!("indexes/{name}"))?)
+            .bearer_auth(&self.connection.api_key)
+            .send()?;
+        if response.status().is_success() || response.status().as_u16() == 404 {
+            return Ok(());
+        }
+        Err(anyhow!(
+            "failed to delete index {name}: {}",
+            response.text()?
+        ))
+    }
+
     pub fn apply_settings(&self, index: &str, settings: &Value) -> Result<()> {
         let task = self
             .client

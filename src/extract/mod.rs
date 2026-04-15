@@ -23,6 +23,7 @@ pub struct DeclarationCandidate {
     pub line_end: usize,
     pub signature: Option<String>,
     pub extraction_confidence: String,
+    pub references_count: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -116,7 +117,6 @@ pub fn extract_symbols(
                 related_symbols: Vec::new(),
                 related_tests: Vec::new(),
                 related_tests_count: 0,
-                references_count: 0,
                 validation_commands: Vec::new(),
                 missing_test_warning: None,
                 package_name: package.name.clone(),
@@ -128,6 +128,7 @@ pub fn extract_symbols(
                 is_test,
                 autoloadable: true,
                 extraction_confidence: declaration.extraction_confidence.clone(),
+                references_count: declaration.references_count,
                 path: path_str.clone(),
                 absolute_path: abs_str.clone(),
                 line_start: declaration.line_start,
@@ -137,6 +138,10 @@ pub fn extract_symbols(
     }
 
     Ok(symbols)
+}
+
+pub fn fallback_candidates(contents: &str) -> Vec<DeclarationCandidate> {
+    fallback::extract_candidates(contents)
 }
 
 fn build_fqn(declaration: &DeclarationCandidate) -> String {

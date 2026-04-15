@@ -129,8 +129,6 @@ pub struct RunManifest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchHit<T> {
-    #[serde(default)]
-    pub id: Option<String>,
     #[serde(flatten)]
     pub document: T,
     #[serde(rename = "_rankingScore", default)]

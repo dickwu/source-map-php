@@ -35,6 +35,7 @@ pub fn extract_candidates(contents: &str) -> Vec<DeclarationCandidate> {
                 line_end: idx + 1,
                 signature: Some(line.trim().to_string()),
                 extraction_confidence: "fallback".to_string(),
+                references_count: 0,
             });
             current_class = Some(name);
             class_depth = brace_depth + line.matches('{').count();
@@ -54,6 +55,7 @@ pub fn extract_candidates(contents: &str) -> Vec<DeclarationCandidate> {
                 line_end: idx + 1,
                 signature: Some(line.trim().to_string()),
                 extraction_confidence: "fallback".to_string(),
+                references_count: 0,
             });
         }
 

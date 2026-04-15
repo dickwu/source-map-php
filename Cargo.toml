@@ -2,6 +2,7 @@
 name = "source-map-php"
 version = "0.1.0"
 edition = "2024"
+default-run = "source-map-php"
 
 [dependencies]
 anyhow = "1.0.100"

@@ -1,9 +1,10 @@
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha1::{Digest, Sha1};
 use url::Url;
 
@@ -82,6 +83,12 @@ pub struct SanitizerConfig {
 pub struct MeiliConnection {
     pub host: Url,
     pub api_key: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ConnectFile {
+    host: Option<String>,
+    api_key: Option<String>,
 }
 
 impl Default for IndexerConfig {
@@ -208,10 +215,45 @@ impl IndexerConfig {
     }
 
     pub fn resolve_meili(&self) -> Result<MeiliConnection> {
-        let host = Url::parse(&self.meilisearch.host)
-            .with_context(|| format!("invalid MEILI_HOST {}", self.meilisearch.host))?;
-        let api_key = env::var(&self.meilisearch.master_key_env)
-            .with_context(|| format!("missing env {}", self.meilisearch.master_key_env))?;
+        let env_host = env::var("MEILI_HOST").ok();
+        let env_api_key = env::var(&self.meilisearch.master_key_env).ok();
+        let connect_path = default_connect_file_path();
+
+        self.resolve_meili_with_sources(&connect_path, env_host.as_deref(), env_api_key.as_deref())
+    }
+
+    fn resolve_meili_with_sources(
+        &self,
+        connect_path: &Path,
+        env_host: Option<&str>,
+        env_api_key: Option<&str>,
+    ) -> Result<MeiliConnection> {
+        let connect_file = ConnectFile::load(connect_path)?;
+
+        let host_source = env_host
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                if self.meilisearch.host != default_meili_host() {
+                    Some(self.meilisearch.host.clone())
+                } else {
+                    None
+                }
+            })
+            .or(connect_file.host)
+            .unwrap_or_else(|| self.meilisearch.host.clone());
+
+        let host = Url::parse(&host_source)
+            .with_context(|| format!("invalid MEILI_HOST {host_source}"))?;
+        let api_key = env_api_key
+            .map(ToOwned::to_owned)
+            .or(connect_file.api_key)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "missing meilisearch api key in env {} or {}",
+                    self.meilisearch.master_key_env,
+                    connect_path.display()
+                )
+            })?;
         Ok(MeiliConnection { host, api_key })
     }
 
@@ -221,6 +263,64 @@ impl IndexerConfig {
         hasher.update(raw.as_bytes());
         Ok(format!("{:x}", hasher.finalize()))
     }
+}
+
+impl ConnectFile {
+    fn load(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        Self::from_json(&raw).with_context(|| format!("parse {}", path.display()))
+    }
+
+    fn from_json(raw: &str) -> Result<Self> {
+        let value: Value = serde_json::from_str(raw)?;
+        Ok(Self {
+            host: value_lookup(&value, &["host", "url", "endpoint"]).or_else(|| {
+                nested_lookup(
+                    &value,
+                    &["connection", "default", "meilisearch"],
+                    &["host", "url", "endpoint"],
+                )
+            }),
+            api_key: value_lookup(
+                &value,
+                &["api_key", "apiKey", "master_key", "masterKey", "key"],
+            )
+            .or_else(|| {
+                nested_lookup(
+                    &value,
+                    &["connection", "default", "meilisearch"],
+                    &["api_key", "apiKey", "master_key", "masterKey", "key"],
+                )
+            }),
+        })
+    }
+}
+
+fn value_lookup(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .map(|item| item.to_string())
+    })
+}
+
+fn nested_lookup(value: &Value, containers: &[&str], keys: &[&str]) -> Option<String> {
+    containers.iter().find_map(|container| {
+        value
+            .get(container)
+            .and_then(|nested| value_lookup(nested, keys))
+    })
+}
+
+pub(crate) fn default_connect_file_path() -> PathBuf {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("~"))
+        .join(".config/meilisearch/connect.json")
 }
 
 fn default_framework() -> Framework {
@@ -321,9 +421,11 @@ fn default_inline_comment_window() -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use tempfile::tempdir;
 
-    use super::IndexerConfig;
+    use super::{ConnectFile, IndexerConfig};
 
     #[test]
     fn defaults_derive_prefix_from_repo_name() {
@@ -349,5 +451,104 @@ slug = "custom"
 
         let config = IndexerConfig::load(&path).unwrap();
         assert_eq!(config.project.slug.as_deref(), Some("custom"));
+    }
+
+    #[test]
+    fn parses_flat_connect_file_shape() {
+        let raw = r#"{
+          "host": "http://meili.example:7700",
+          "api_key": "secret"
+        }"#;
+
+        let parsed = ConnectFile::from_json(raw).unwrap();
+        assert_eq!(parsed.host.as_deref(), Some("http://meili.example:7700"));
+        assert_eq!(parsed.api_key.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn parses_nested_connect_file_shape() {
+        let raw = r#"{
+          "connection": {
+            "url": "http://nested.example:7700",
+            "masterKey": "nested-secret"
+          }
+        }"#;
+
+        let parsed = ConnectFile::from_json(raw).unwrap();
+        assert_eq!(parsed.host.as_deref(), Some("http://nested.example:7700"));
+        assert_eq!(parsed.api_key.as_deref(), Some("nested-secret"));
+    }
+
+    #[test]
+    fn connect_file_fills_missing_api_key() {
+        let dir = tempdir().unwrap();
+        let connect_path = dir.path().join("connect.json");
+        std::fs::write(
+            &connect_path,
+            r#"{"url":"http://file.example:7700","apiKey":"from-file"}"#,
+        )
+        .unwrap();
+
+        let config = IndexerConfig::default();
+        let connection = config
+            .resolve_meili_with_sources(&connect_path, None, None)
+            .unwrap();
+
+        assert_eq!(connection.host.as_str(), "http://file.example:7700/");
+        assert_eq!(connection.api_key, "from-file");
+    }
+
+    #[test]
+    fn explicit_config_host_beats_connect_file_host() {
+        let dir = tempdir().unwrap();
+        let connect_path = dir.path().join("connect.json");
+        std::fs::write(
+            &connect_path,
+            r#"{"url":"http://file.example:7700","apiKey":"from-file"}"#,
+        )
+        .unwrap();
+
+        let mut config = IndexerConfig::default();
+        config.meilisearch.host = "http://project.example:7700".to_string();
+
+        let connection = config
+            .resolve_meili_with_sources(&connect_path, None, None)
+            .unwrap();
+
+        assert_eq!(connection.host.as_str(), "http://project.example:7700/");
+        assert_eq!(connection.api_key, "from-file");
+    }
+
+    #[test]
+    fn env_values_beat_connect_file() {
+        let dir = tempdir().unwrap();
+        let connect_path = dir.path().join("connect.json");
+        std::fs::write(
+            &connect_path,
+            r#"{"url":"http://file.example:7700","apiKey":"from-file"}"#,
+        )
+        .unwrap();
+
+        let config = IndexerConfig::default();
+        let connection = config
+            .resolve_meili_with_sources(
+                &connect_path,
+                Some("http://env.example:7700"),
+                Some("from-env"),
+            )
+            .unwrap();
+
+        assert_eq!(connection.host.as_str(), "http://env.example:7700/");
+        assert_eq!(connection.api_key, "from-env");
+    }
+
+    #[test]
+    fn missing_sources_still_errors_for_api_key() {
+        let config = IndexerConfig::default();
+        let err = config
+            .resolve_meili_with_sources(Path::new("/definitely/missing/connect.json"), None, None)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("missing meilisearch api key"));
     }
 }

@@ -42,43 +42,46 @@ pub fn extract_routes(
 }
 
 pub fn extract_schema(repo: &Path, repo_name: &str) -> Result<Vec<SchemaDoc>> {
-    let migrations = repo.join("database/migrations");
-    if !migrations.exists() {
-        return Ok(Vec::new());
-    }
+    let migration_roots = [repo.join("database/migrations"), repo.join("migrations")];
     let create_re = Regex::new(r#"Schema::create\(\s*['"]([^'"]+)['"]"#).unwrap();
     let table_re = Regex::new(r#"Schema::table\(\s*['"]([^'"]+)['"]"#).unwrap();
     let mut docs = Vec::new();
-    for entry in walkdir::WalkDir::new(&migrations)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-    {
-        let contents = fs::read_to_string(entry.path())?;
-        for (idx, line) in contents.lines().enumerate() {
-            let capture = create_re.captures(line).or_else(|| table_re.captures(line));
-            if let Some(capture) = capture {
-                let table = capture.get(1).unwrap().as_str().to_string();
-                let operation = if line.contains("Schema::create") {
-                    "create"
-                } else {
-                    "table"
-                };
-                let path = entry
-                    .path()
-                    .strip_prefix(repo)
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned();
-                docs.push(SchemaDoc {
-                    id: make_stable_id(&[repo_name, &path, &table, operation]),
-                    repo: repo_name.to_string(),
-                    migration: entry.file_name().to_string_lossy().into_owned(),
-                    table: Some(table),
-                    operation: operation.to_string(),
-                    path,
-                    line_start: idx + 1,
-                });
+    for migrations in migration_roots {
+        if !migrations.exists() {
+            continue;
+        }
+        for entry in walkdir::WalkDir::new(&migrations)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("php"))
+        {
+            let contents = fs::read_to_string(entry.path())?;
+            for (idx, line) in contents.lines().enumerate() {
+                let capture = create_re.captures(line).or_else(|| table_re.captures(line));
+                if let Some(capture) = capture {
+                    let table = capture.get(1).unwrap().as_str().to_string();
+                    let operation = if line.contains("Schema::create") {
+                        "create"
+                    } else {
+                        "table"
+                    };
+                    let path = entry
+                        .path()
+                        .strip_prefix(repo)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned();
+                    docs.push(SchemaDoc {
+                        id: make_stable_id(&[repo_name, &path, &table, operation]),
+                        repo: repo_name.to_string(),
+                        migration: entry.file_name().to_string_lossy().into_owned(),
+                        table: Some(table),
+                        operation: operation.to_string(),
+                        path,
+                        line_start: idx + 1,
+                    });
+                }
             }
         }
     }

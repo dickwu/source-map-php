@@ -3,4 +3,5 @@
 /.env.*
 /build
 /.omx/
+tests/fixtures/**/build/
 /.DS_Store

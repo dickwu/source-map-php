@@ -88,12 +88,22 @@ source-map-php init --dir .
 cp .env.example .env
 ```
 
+`init` also creates `~/.config/meilisearch/connect.json` with placeholder values if that file does not already exist.
+
 Set your Meilisearch connection in `.env`:
 
 ```bash
 MEILI_HOST=http://127.0.0.1:7700
 MEILI_MASTER_KEY=change-me
 ```
+
+The CLI reads Meilisearch credentials in this order:
+
+1. `MEILI_HOST` and `MEILI_MASTER_KEY` from the environment
+2. `~/.config/meilisearch/connect.json`
+3. The project config host default for the URL only
+
+`init` will not overwrite an existing `~/.config/meilisearch/connect.json`.
 
 ### 2. Check your environment
 
@@ -104,28 +114,49 @@ source-map-php doctor --repo /path/to/php-repo
 ### 3. Build an index
 
 ```bash
-source-map-php index --repo /path/to/php-repo --framework auto --mode clean
+source-map-php index --repo /path/to/php-repo --project-name staff-api --framework auto --mode clean
 ```
 
 ### 4. Search the index
 
 ```bash
-source-map-php search --query "patient consent store"
+source-map-php search --project staff-api --query "patient consent store"
 ```
 
-### 5. Ask for validation commands
+If you omit `--index`, the CLI now searches across all saved index types and prints grouped results.
+
+You can point `--project` at either:
+
+- the saved project name, for example `staff-api`
+- the full repository path, for example `/Users/you/work/staff-api`
+
+### 5. Remove a saved project
+
+```bash
+source-map-php remove --project staff-api
+```
+
+That removes the project entry from `~/.config/meilisearch/project.json` and deletes the matching Meilisearch indexes for that project prefix.
+
+If you only want to forget the saved project name and keep the indexes:
+
+```bash
+source-map-php remove --project staff-api --keep-indexes
+```
+
+### 6. Ask for validation commands
 
 ```bash
 source-map-php validate --symbol "App\\Services\\ConsentService::sign"
 ```
 
-### 6. Verify staged indexes
+### 7. Verify staged indexes
 
 ```bash
 source-map-php verify
 ```
 
-### 7. Promote staged indexes
+### 8. Promote staged indexes
 
 ```bash
 source-map-php promote --run-id <run-id>
@@ -136,8 +167,9 @@ source-map-php promote --run-id <run-id>
 ```bash
 source-map-php init [--dir <DIR>] [--force]
 source-map-php doctor [--repo <REPO>] [--config <CONFIG>]
-source-map-php index --repo <REPO> [--framework auto|laravel|hyperf] [--mode clean|staged] [--config <CONFIG>]
-source-map-php search --query <QUERY> [--index symbols|routes|tests|packages|schema] [--framework auto|laravel|hyperf] [--config <CONFIG>] [--json]
+source-map-php index --repo <REPO> [--project-name <NAME>] [--framework auto|laravel|hyperf] [--mode clean|staged] [--config <CONFIG>]
+source-map-php search --query <QUERY> [--project <NAME_OR_PATH>] [--index all|symbols|routes|tests|packages|schema] [--framework auto|laravel|hyperf] [--config <CONFIG>] [--json]
+source-map-php remove --project <NAME_OR_PATH> [--keep-indexes] [--config <CONFIG>]
 source-map-php validate --symbol <SYMBOL> [--config <CONFIG>] [--json]
 source-map-php verify [--config <CONFIG>]
 source-map-php promote [--config <CONFIG>] [--run-id <RUN_ID>]
@@ -151,7 +183,8 @@ source-map-php promote [--config <CONFIG>] [--run-id <RUN_ID>]
 4. Enrich with framework-specific route and schema metadata
 5. Link tests and generate validation commands
 6. Apply Meilisearch settings and write documents
-7. Emit a run manifest to `build/index-runs/<run_id>.json`
+7. Save project metadata to `~/.config/meilisearch/project.json`
+8. Emit a run manifest to `build/index-runs/<run_id>.json`
 
 ## Default indexing scope
 
