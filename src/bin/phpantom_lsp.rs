@@ -55,7 +55,10 @@ fn main() -> anyhow::Result<()> {
             }
             Some("exit") => break,
             Some("textDocument/didOpen") => {
-                if let Some(text_document) = message.get("params").and_then(|params| params.get("textDocument")) {
+                if let Some(text_document) = message
+                    .get("params")
+                    .and_then(|params| params.get("textDocument"))
+                {
                     if let (Some(uri), Some(text)) = (
                         text_document.get("uri").and_then(Value::as_str),
                         text_document.get("text").and_then(Value::as_str),
@@ -110,8 +113,9 @@ fn main() -> anyhow::Result<()> {
                     .and_then(Value::as_u64)
                     .unwrap_or_default() as usize
                     + 1;
-                let result = if let Some(candidate) =
-                    declarations.iter().find(|candidate| candidate.line_start == line)
+                let result = if let Some(candidate) = declarations
+                    .iter()
+                    .find(|candidate| candidate.line_start == line)
                 {
                     state.workspace_references(candidate)?
                 } else {
@@ -148,7 +152,10 @@ struct ServerState {
 }
 
 impl ServerState {
-    fn workspace_references(&mut self, candidate: &DeclarationCandidate) -> anyhow::Result<Vec<Value>> {
+    fn workspace_references(
+        &mut self,
+        candidate: &DeclarationCandidate,
+    ) -> anyhow::Result<Vec<Value>> {
         let Some(root) = &self.root else {
             return Ok(Vec::new());
         };
@@ -238,7 +245,10 @@ fn document_symbols(declarations: &[DeclarationCandidate]) -> Value {
             } else {
                 tops.push(symbol);
             }
-        } else if matches!(declaration.kind.as_str(), "class" | "interface" | "enum" | "trait") {
+        } else if matches!(
+            declaration.kind.as_str(),
+            "class" | "interface" | "enum" | "trait"
+        ) {
             classes.insert(declaration.name.clone(), symbol);
         } else {
             tops.push(symbol);

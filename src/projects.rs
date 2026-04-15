@@ -52,8 +52,11 @@ impl ProjectRegistry {
         } else {
             self.projects.push(record);
         }
-        self.projects
-            .sort_by(|left, right| left.name.cmp(&right.name).then(left.repo_path.cmp(&right.repo_path)));
+        self.projects.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then(left.repo_path.cmp(&right.repo_path))
+        });
     }
 
     pub fn resolve<'a>(&'a self, selector: &str) -> Option<&'a ProjectRecord> {

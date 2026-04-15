@@ -550,7 +550,8 @@ pub mod commands {
             .map(|item| item.index_prefix.clone())
             .unwrap_or_else(|| config.effective_index_prefix(&current_dir));
         if let Some(project) = selected_project.as_ref() {
-            if env::var("MEILI_HOST").is_err() && config.meilisearch.host == "http://127.0.0.1:7700" {
+            if env::var("MEILI_HOST").is_err() && config.meilisearch.host == "http://127.0.0.1:7700"
+            {
                 config.meilisearch.host = project.meili_host.clone();
             }
         }
@@ -631,7 +632,10 @@ pub mod commands {
                                 "{} {} -> {}",
                                 hit.document.method,
                                 hit.document.uri,
-                                hit.document.action.clone().unwrap_or_else(|| "unknown".to_string())
+                                hit.document
+                                    .action
+                                    .clone()
+                                    .unwrap_or_else(|| "unknown".to_string())
                             );
                         }
                     }
@@ -827,7 +831,8 @@ pub mod commands {
 
         if !keep_indexes {
             let mut config = IndexerConfig::load(config_path)?;
-            if env::var("MEILI_HOST").is_err() && config.meilisearch.host == "http://127.0.0.1:7700" {
+            if env::var("MEILI_HOST").is_err() && config.meilisearch.host == "http://127.0.0.1:7700"
+            {
                 config.meilisearch.host = record.meili_host.clone();
             }
             let meili = MeiliClient::new(config.resolve_meili()?)?;
