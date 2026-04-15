@@ -47,10 +47,15 @@ jobs:
       contents: write
     steps:
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_PRERELEASE: ${{ contains(github.ref_name, '-') }}
+        run: |
+          args=(release create "${{ github.ref_name }}" --draft --generate-notes --verify-tag)
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh "${args[@]}" || gh release edit "${{ github.ref_name }}" --draft
 
   release-assets:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -91,8 +96,27 @@ jobs:
           tar -C dist -czf "source-map-php-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" "$(basename "$asset_dir")"
 
       - name: Upload release artifact
-        uses: softprops/action-gh-release@v2
-        with:
-          files: source-map-php-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
-          fail_on_unmatched_files: true
-          overwrite_files: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            "source-map-php-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" \
+            --clobber
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release-assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_PRERELEASE: ${{ contains(github.ref_name, '-') }}
+        run: |
+          args=(release edit "${{ github.ref_name }}" --draft=false)
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh "${args[@]}"
