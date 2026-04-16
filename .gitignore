@@ -6,3 +6,4 @@
 tests/fixtures/**/build/
 /.DS_Store
 /.omc
+.omx/

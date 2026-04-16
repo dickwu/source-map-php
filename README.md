@@ -101,20 +101,35 @@ source-map-php init --dir .
 cp .env.example .env
 ```
 
-`init` also creates `~/.config/meilisearch/connect.json` with placeholder values if that file does not already exist.
+`init` writes:
 
-Set your Meilisearch connection in `.env`:
+- `config/indexer.toml`
+- `.env.example`
+- `docker-compose.meilisearch.yml`
+- `~/.config/meilisearch/connect.json` with placeholder values if that file does not already exist
+
+Fill `.env` if you want project-local Meilisearch credentials:
 
 ```bash
 MEILI_HOST=http://127.0.0.1:7700
 MEILI_MASTER_KEY=change-me
 ```
 
-The CLI reads Meilisearch credentials in this order:
+Commands that use `--config` load `<project-root>/.env` automatically before resolving Meilisearch settings. The default config path is `config/indexer.toml`.
 
-1. `MEILI_HOST` and `MEILI_MASTER_KEY` from the environment
+Meilisearch host resolution order:
+
+1. `MEILI_HOST`
+2. `meilisearch.host` in `config/indexer.toml` when you override the default
+3. `~/.config/meilisearch/connect.json`
+4. The built-in default `http://127.0.0.1:7700`
+
+Meilisearch API key resolution order:
+
+1. `MEILI_MASTER_KEY` by default, or the env var named by `meilisearch.master_key_env`
 2. `~/.config/meilisearch/connect.json`
-3. The project config host default for the URL only
+
+If you already keep shared credentials in `~/.config/meilisearch/connect.json`, you can skip `.env`. Use a project `.env` when you want per-repo overrides.
 
 `init` will not overwrite an existing `~/.config/meilisearch/connect.json`.
 
